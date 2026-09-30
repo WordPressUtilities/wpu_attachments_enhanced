@@ -1,0 +1,2 @@
+<?php
+return ['domain'=>NULL,'plural-forms'=>NULL,'language'=>'fr_FR','project-id-version'=>'WPU Attachments Enhanced','pot-creation-date'=>'2026-09-30 12:00+0200','po-revision-date'=>'','messages'=>['Protected against deletion'=>'Protégé contre la suppression','Protection'=>'Protection','Protected'=>'Protégés']];

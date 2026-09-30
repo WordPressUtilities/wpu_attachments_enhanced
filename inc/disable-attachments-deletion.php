@@ -10,6 +10,11 @@ function wpu_attachments_enhanced__can_toggle_protection() {
     return current_user_can(apply_filters('wpu_attachments_enhanced__protected_min_cap', 'manage_options'));
 }
 
+/* Media views (grid + modal) or the list mode screen : nothing below is useful anywhere else */
+function wpu_attachments_enhanced__is_media_screen() {
+    return did_action('wp_enqueue_media') || (isset($GLOBALS['pagenow']) && $GLOBALS['pagenow'] === 'upload.php');
+}
+
 /* ----------------------------------------------------------
   Block deletion for everyone while protected
 ---------------------------------------------------------- */
@@ -101,14 +106,17 @@ add_action('admin_head-upload.php', function () {
 ---------------------------------------------------------- */
 
 add_filter('wp_prepare_attachment_for_js', function ($response, $attachment) {
-    $response['wpuProtected'] = (bool) get_post_meta($attachment->ID, WPU_ATTACHMENTS_ENHANCED__PROTECTED_META, true);
+    $response['wpuDisableDeletion'] = (bool) get_post_meta($attachment->ID, WPU_ATTACHMENTS_ENHANCED__PROTECTED_META, true);
     return $response;
 }, 10, 2);
 
 /* Same approach as the dominant-color-images plugin : patch the attachment template to inject a lock icon */
 add_action('admin_print_footer_scripts', function () {
+    if (!wpu_attachments_enhanced__is_media_screen()) {
+        return;
+    }
     $label = __('Protected against deletion', 'wpu_attachments_enhanced');
-    $icon = '<# if ( data.wpuProtected ) { #><span class="wpu-protected-icon dashicons dashicons-lock" title="' . esc_attr($label) . '"><span class="screen-reader-text">' . esc_html($label) . '</span></span><# } #>';
+    $icon = '<# if ( data.wpuDisableDeletion ) { #><span class="wpu-protected-icon dashicons dashicons-lock" title="' . esc_attr($label) . '"><span class="screen-reader-text">' . esc_html($label) . '</span></span><# } #>';
     ?>
     <script>
     (function() {
@@ -135,3 +143,87 @@ add_action('admin_print_footer_scripts', function () {
     </style>
     <?php
 });
+
+/* ----------------------------------------------------------
+  Filter : media library grid mode + modal + list mode
+---------------------------------------------------------- */
+
+function wpu_attachments_enhanced__protected_meta_query($query_args) {
+    $meta_query = isset($query_args['meta_query']) && is_array($query_args['meta_query']) ? $query_args['meta_query'] : array();
+    $meta_query[] = array(
+        'key' => WPU_ATTACHMENTS_ENHANCED__PROTECTED_META,
+        'value' => '1'
+    );
+    return $meta_query;
+}
+
+/* Grid + modal : core whitelists query keys, so the custom prop is read from the raw request */
+add_filter('ajax_query_attachments_args', function ($query) {
+    if (empty($_REQUEST['query']['wpuDisableDeletion'])) {
+        return $query;
+    }
+    $query['meta_query'] = wpu_attachments_enhanced__protected_meta_query($query);
+    return $query;
+});
+
+/* List mode */
+add_action('pre_get_posts', function ($query) {
+    global $pagenow;
+    if (!is_admin() || !$query->is_main_query() || $pagenow !== 'upload.php') {
+        return;
+    }
+    if (!isset($_GET['attachment-filter']) || $_GET['attachment-filter'] !== 'wpu_protected') {
+        return;
+    }
+    $query->set('meta_query', wpu_attachments_enhanced__protected_meta_query($query->query_vars));
+});
+
+/* Runs after footer scripts (priority 10) so media-views is loaded */
+add_action('admin_print_footer_scripts', function () {
+    if (!wpu_attachments_enhanced__is_media_screen()) {
+        return;
+    }
+    $label = __('Protected', 'wpu_attachments_enhanced');
+    $is_list_filter_active = isset($_GET['attachment-filter']) && $_GET['attachment-filter'] === 'wpu_protected';
+    ?>
+    <script>
+    (function() {
+        var label = <?php echo wp_json_encode($label); ?>;
+
+        /* List mode : core offers no hook for this select, the form reloads the page on change */
+        var select = document.getElementById('attachment-filter');
+        if (select) {
+            var option = new Option(label, 'wpu_protected', false, <?php echo $is_list_filter_active ? 'true' : 'false'; ?>);
+            select.appendChild(option);
+        }
+
+        /* Grid + modal */
+        if (!window.wp || !wp.media || !wp.media.view || !wp.media.view.AttachmentFilters) {
+            return;
+        }
+        var All = wp.media.view.AttachmentFilters.All;
+        var createFilters = All.prototype.createFilters;
+        All.prototype.createFilters = function() {
+            createFilters.apply(this, arguments);
+            /* Other filters must reset the prop, same as core does with author */
+            _.each(this.filters, function(filter) {
+                filter.props.wpuDisableDeletion = null;
+            });
+            this.filters.wpuDisableDeletion = {
+                text: label,
+                props: {
+                    status: null,
+                    type: null,
+                    uploadedTo: null,
+                    orderby: 'date',
+                    order: 'DESC',
+                    author: null,
+                    wpuDisableDeletion: 1
+                },
+                priority: 70
+            };
+        };
+    }());
+    </script>
+    <?php
+}, 20);
